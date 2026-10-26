@@ -82,6 +82,10 @@ export interface FinanceReceivable { id: string; playerId: string; playerName: s
 export interface PaymentAllocation { receivableId: string; description: string; amount: number }
 export interface FinancePayment { id: string; playerId: string; playerName: string; amount: number; paymentDate: string; method: string; referenceCode: string | null; idempotencyKey: string; notes: string | null; status: 'posted' | 'reversed'; reversalOfPaymentId: string | null; allocations: PaymentAllocation[]; createdAtUtc: string }
 /** Tổng phát sinh / đã phân bổ / còn nợ (tính trước khi phân trang) kèm trang công nợ còn mở và trang đã thu. */
+/** Bảng kê công nợ còn mở để xuất text: người chơi theo công nợ, khách không hồ sơ theo tiền buổi chưa trả. */
+export interface DebtStatementItem { description: string; amount: number; paidAmount: number; outstanding: number }
+export interface DebtStatementPerson { playerId: string | null; memberCode: string | null; name: string; isGuest: boolean; outstanding: number; items: DebtStatementItem[] }
+export interface DebtStatement { playerOutstanding: number; guestOutstanding: number; players: DebtStatementPerson[]; guests: DebtStatementPerson[] }
 export interface PaymentOverview { charges: number; allocated: number; outstanding: number; receivables: PagedResult<FinanceReceivable>; payments: PagedResult<FinancePayment> }
 export interface PaymentInput { playerId: string; amount: number; paymentDate: string; method: string; referenceCode: string | null; idempotencyKey: string; notes: string | null; receivableId?: string | null }
 
@@ -118,6 +122,14 @@ export function getPaymentOverview(page: number, search: string, period: string)
   if (search) q.set('search', search)
   if (period) { q.set('year', period.slice(0, 4)); q.set('month', String(Number(period.slice(5, 7)))) }
   return apiRequest<PaymentOverview>(`/api/finance/overview?${q}`)
+}
+
+/** Công nợ còn mở theo từng người (cả khách) để xuất text; cùng bộ lọc tìm/tháng với danh sách công nợ. */
+export function getDebtStatement(search: string, period: string) {
+  const q = new URLSearchParams()
+  if (search) q.set('search', search)
+  if (period) { q.set('year', period.slice(0, 4)); q.set('month', String(Number(period.slice(5, 7)))) }
+  return apiRequest<DebtStatement>(`/api/finance/debt-statement?${q}`)
 }
 
 /** Mọi công nợ còn mở (dùng cho form ghi đã thu theo người chơi). */

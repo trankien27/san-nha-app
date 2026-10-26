@@ -1,13 +1,14 @@
 import { Stack } from 'expo-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
+import { Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { usePermissions } from '@/auth/AuthContext'
 import { errorMessage } from '@/lib/api'
+import { buildDebtStatementText, buildPersonDebtText } from '@/lib/debtText'
 import { formatDate, formatVnd, newIdempotencyKey } from '@/lib/format'
 import {
-  bangkokDate, currentMonth, digitsOnly, formatIsoDate, getOpenReceivables, getPaymentOverview, groupDigits, monthLabel, parseVnDate,
-  receivableStatusLabels, recordPayment, shiftMonth, type FinanceReceivable,
+  bangkokDate, currentMonth, digitsOnly, formatIsoDate, getDebtStatement, getOpenReceivables, getPaymentOverview, groupDigits, monthLabel, parseVnDate,
+  receivableStatusLabels, recordPayment, shiftMonth, type DebtStatement, type FinanceReceivable,
 } from '@/lib/services/finance'
 import { useLoad } from '@/lib/useLoad'
 import { Avatar, Button, Chip, EmptyState, ErrorState, Icon, Loading, styles as ui } from '@/ui/components'
@@ -32,6 +33,7 @@ export default function ReceivablesScreen() {
   const [page, setPage] = useState(1)
   const [method, setMethod] = useState<(typeof quickMethods)[number]>('Tiền mặt')
   const [busy, setBusy] = useState<string | null>(null)
+  const [showText, setShowText] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const { data, error, loading, refreshing, reload } = useLoad(() => (canBill ? getPaymentOverview(page, search, period) : Promise.resolve(null)), `${page}|${search}|${period}`)
 
@@ -91,8 +93,9 @@ export default function ReceivablesScreen() {
                 </Pressable>
               ))}
             </View>
-            <View style={{ paddingHorizontal: 16 }}>
+            <View style={{ paddingHorizontal: 16, gap: 8 }}>
               <Button label="Ghi đã thu theo người chơi" tone="money" icon="cash-plus" onPress={() => setShowForm(true)} />
+              <Button label="Xuất text công nợ (cả khách)" tone="outline" icon="text-box-outline" onPress={() => setShowText(true)} />
             </View>
             {data && <Text style={styles.count}>{data.receivables.totalItems} khoản còn nợ</Text>}
           </View>
@@ -118,6 +121,7 @@ export default function ReceivablesScreen() {
         )}
         ListFooterComponent={!loading && !error && pages > 1 ? <Pager page={page} pages={pages} onChange={setPage} /> : undefined}
       />
+      {showText && <DebtTextSheet search={search} period={period} onClose={() => setShowText(false)} />}
       {showForm && <PaymentForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); void reload() }} />}
     </>
   )
@@ -160,6 +164,56 @@ function MoneyInput({ value, onChange, style }: { value: string; onChange: (digi
       <TextInput value={value === '' ? '' : groupDigits(value)} onChangeText={(text) => onChange(digitsOnly(text))} keyboardType="number-pad" placeholder="0" placeholderTextColor={colors.muted} style={styles.moneyInput} />
       <Text style={{ color: colors.muted, fontSize: font.body }}>₫</Text>
     </View>
+  )
+}
+
+/** Xuất công nợ còn mở dạng text (người chơi và khách) theo bộ lọc đang chọn: chia sẻ cả danh sách hoặc từng người. */
+function DebtTextSheet({ search, period, onClose }: { search: string; period: string; onClose: () => void }) {
+  const insets = useSafeAreaInsets()
+  const notify = useToast()
+  const [details, setDetails] = useState(true)
+  const { data, error, loading, reload } = useLoad<DebtStatement>(() => getDebtStatement(search, period), `${search}|${period}`)
+  const people = data ? [...data.players, ...data.guests] : []
+  const text = data ? buildDebtStatementText(data, { details, period, search }) : ''
+  const share = async (message: string) => {
+    try { await Share.share({ message }) } catch { notify('error', 'Không mở được hộp chia sẻ.') }
+  }
+
+  return (
+    <Modal visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : undefined} onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <View style={[styles.sheetHeader, { paddingTop: Platform.OS === 'ios' ? 14 : insets.top + 10 }]}>
+          <Text style={{ flex: 1, fontSize: font.title, fontWeight: '700', color: colors.ink }}>Xuất công nợ dạng text</Text>
+          <Pressable accessibilityLabel="Đóng" onPress={onClose} hitSlop={12} style={styles.closeButton}><Icon name="close" size={22} color={colors.ink} /></Pressable>
+        </View>
+        {loading ? <Loading label="Đang tổng hợp công nợ…" />
+          : error || !data ? <ErrorState message={error ?? 'Không thể tải công nợ.'} onRetry={() => void reload()} />
+            : people.length === 0 ? <EmptyState icon="check-circle-outline" title="Không ai còn nợ" message="Người chơi và khách đã trả hết theo bộ lọc đang chọn." />
+              : (
+                <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: insets.bottom + 24 }}>
+                  <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: details }} onPress={() => setDetails((value) => !value)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Icon name={details ? 'checkbox-marked' : 'checkbox-blank-outline'} color={colors.money} />
+                    <Text style={{ fontSize: font.small, color: colors.ink }}>Kèm từng buổi còn nợ</Text>
+                  </Pressable>
+                  <View style={styles.textPreview}><Text selectable style={styles.textPreviewBody}>{text}</Text></View>
+                  <Button label="Chia sẻ tất cả" tone="money" icon="share-variant-outline" onPress={() => void share(text)} />
+                  <Text style={styles.label}>Gửi riêng từng người</Text>
+                  <View style={{ backgroundColor: '#fff', borderRadius: 16, paddingHorizontal: 14 }}>
+                    {people.map((person, index) => (
+                      <View key={person.playerId ?? `guest-${person.name}`} style={[ui.row, { minHeight: 56 }, index === people.length - 1 && { borderBottomWidth: 0 }]}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={ui.rowTitle}>{person.name}</Text>
+                          <Text style={ui.rowSub}>{person.isGuest ? 'Khách' : person.memberCode} · {person.items.length} buổi</Text>
+                        </View>
+                        <Text style={{ fontSize: font.small, color: colors.danger, fontWeight: '600' }}>{formatVnd(person.outstanding)}</Text>
+                        <Pressable accessibilityLabel={`Chia sẻ công nợ của ${person.name}`} hitSlop={8} onPress={() => void share(buildPersonDebtText(person))} style={styles.closeButton}><Icon name="share-variant-outline" color={colors.money} /></Pressable>
+                      </View>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+      </View>
+    </Modal>
   )
 }
 
@@ -328,6 +382,8 @@ const styles = StyleSheet.create({
   closeButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   label: { fontSize: font.small, fontWeight: '600', color: colors.ink },
   hint: { fontSize: font.caption, color: colors.muted },
+  textPreview: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 12 },
+  textPreviewBody: { fontSize: font.small, color: colors.ink, lineHeight: 20 },
   input: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#fff', paddingHorizontal: 12, fontSize: font.body, color: colors.ink },
   moneyBox: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#fff', paddingHorizontal: 12 },
   moneyInput: { flex: 1, minHeight: 46, fontSize: font.body, color: colors.ink },
