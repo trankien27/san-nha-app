@@ -1,10 +1,9 @@
 import { Stack } from 'expo-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
+import { Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { usePermissions } from '@/auth/AuthContext'
 import { errorMessage } from '@/lib/api'
-import { buildDebtStatementText, buildPersonDebtText } from '@/lib/debtText'
 import { formatDate, formatVnd, newIdempotencyKey } from '@/lib/format'
 import {
   bangkokDate, currentMonth, digitsOnly, formatIsoDate, getDebtStatement, getOpenReceivables, getPaymentOverview, groupDigits, monthLabel, parseVnDate,
@@ -33,7 +32,7 @@ export default function ReceivablesScreen() {
   const [page, setPage] = useState(1)
   const [method, setMethod] = useState<(typeof quickMethods)[number]>('Tiền mặt')
   const [busy, setBusy] = useState<string | null>(null)
-  const [showText, setShowText] = useState(false)
+  const [showTable, setShowTable] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const { data, error, loading, refreshing, reload } = useLoad(() => (canBill ? getPaymentOverview(page, search, period) : Promise.resolve(null)), `${page}|${search}|${period}`)
 
@@ -95,7 +94,7 @@ export default function ReceivablesScreen() {
             </View>
             <View style={{ paddingHorizontal: 16, gap: 8 }}>
               <Button label="Ghi đã thu theo người chơi" tone="money" icon="cash-plus" onPress={() => setShowForm(true)} />
-              <Button label="Xuất text công nợ (cả khách)" tone="outline" icon="text-box-outline" onPress={() => setShowText(true)} />
+              <Button label="Bảng công nợ theo buổi (cả khách)" tone="outline" icon="table" onPress={() => setShowTable(true)} />
             </View>
             {data && <Text style={styles.count}>{data.receivables.totalItems} khoản còn nợ</Text>}
           </View>
@@ -121,7 +120,7 @@ export default function ReceivablesScreen() {
         )}
         ListFooterComponent={!loading && !error && pages > 1 ? <Pager page={page} pages={pages} onChange={setPage} /> : undefined}
       />
-      {showText && <DebtTextSheet search={search} period={period} onClose={() => setShowText(false)} />}
+      {showTable && <DebtTableSheet search={search} period={period} onClose={() => setShowTable(false)} />}
       {showForm && <PaymentForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); void reload() }} />}
     </>
   )
@@ -167,48 +166,81 @@ function MoneyInput({ value, onChange, style }: { value: string; onChange: (digi
   )
 }
 
-/** Xuất công nợ còn mở dạng text (người chơi và khách) theo bộ lọc đang chọn: chia sẻ cả danh sách hoặc từng người. */
-function DebtTextSheet({ search, period, onClose }: { search: string; period: string; onClose: () => void }) {
+const nameWidth = 132
+const cellWidth = 120
+const rowHeight = 52
+const headerHeight = 46
+const plain = (value: number) => formatVnd(value).replace(' ₫', '')
+
+/** Bảng công nợ còn mở theo buổi (người chơi và khách) theo bộ lọc đang chọn, để chụp màn hình gửi nhóm. Cột Tên đứng yên, các buổi cuộn ngang. */
+function DebtTableSheet({ search, period, onClose }: { search: string; period: string; onClose: () => void }) {
   const insets = useSafeAreaInsets()
-  const notify = useToast()
-  const [details, setDetails] = useState(true)
   const { data, error, loading, reload } = useLoad<DebtStatement>(() => getDebtStatement(search, period), `${search}|${period}`)
-  const people = data ? [...data.players, ...data.guests] : []
-  const text = data ? buildDebtStatementText(data, { details, period, search }) : ''
-  const share = async (message: string) => {
-    try { await Share.share({ message }) } catch { notify('error', 'Không mở được hộp chia sẻ.') }
-  }
+  const rows = data ? [...data.players, ...data.guests] : []
+  const scope = [period ? monthLabel(period).toLowerCase() : '', search ? `tìm “${search}”` : ''].filter(Boolean).join(' · ')
 
   return (
     <Modal visible animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : undefined} onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View style={[styles.sheetHeader, { paddingTop: Platform.OS === 'ios' ? 14 : insets.top + 10 }]}>
-          <Text style={{ flex: 1, fontSize: font.title, fontWeight: '700', color: colors.ink }}>Xuất công nợ dạng text</Text>
+          <Text style={{ flex: 1, fontSize: font.title, fontWeight: '700', color: colors.ink }}>Bảng công nợ theo buổi</Text>
           <Pressable accessibilityLabel="Đóng" onPress={onClose} hitSlop={12} style={styles.closeButton}><Icon name="close" size={22} color={colors.ink} /></Pressable>
         </View>
         {loading ? <Loading label="Đang tổng hợp công nợ…" />
           : error || !data ? <ErrorState message={error ?? 'Không thể tải công nợ.'} onRetry={() => void reload()} />
-            : people.length === 0 ? <EmptyState icon="check-circle-outline" title="Không ai còn nợ" message="Người chơi và khách đã trả hết theo bộ lọc đang chọn." />
+            : rows.length === 0 ? <EmptyState icon="check-circle-outline" title="Không ai còn nợ" message="Người chơi và khách đã trả hết theo bộ lọc đang chọn." />
               : (
-                <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: insets.bottom + 24 }}>
-                  <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: details }} onPress={() => setDetails((value) => !value)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Icon name={details ? 'checkbox-marked' : 'checkbox-blank-outline'} color={colors.money} />
-                    <Text style={{ fontSize: font.small, color: colors.ink }}>Kèm từng buổi còn nợ</Text>
-                  </Pressable>
-                  <View style={styles.textPreview}><Text selectable style={styles.textPreviewBody}>{text}</Text></View>
-                  <Button label="Chia sẻ tất cả" tone="money" icon="share-variant-outline" onPress={() => void share(text)} />
-                  <Text style={styles.label}>Gửi riêng từng người</Text>
-                  <View style={{ backgroundColor: '#fff', borderRadius: 16, paddingHorizontal: 14 }}>
-                    {people.map((person, index) => (
-                      <View key={person.playerId ?? `guest-${person.name}`} style={[ui.row, { minHeight: 56 }, index === people.length - 1 && { borderBottomWidth: 0 }]}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={ui.rowTitle}>{person.name}</Text>
-                          <Text style={ui.rowSub}>{person.isGuest ? 'Khách' : person.memberCode} · {person.items.length} buổi</Text>
-                        </View>
-                        <Text style={{ fontSize: font.small, color: colors.danger, fontWeight: '600' }}>{formatVnd(person.outstanding)}</Text>
-                        <Pressable accessibilityLabel={`Chia sẻ công nợ của ${person.name}`} hitSlop={8} onPress={() => void share(buildPersonDebtText(person))} style={styles.closeButton}><Icon name="share-variant-outline" color={colors.money} /></Pressable>
+                <ScrollView contentContainerStyle={{ padding: 12, gap: 10, paddingBottom: insets.bottom + 24 }}>
+                  <Text style={styles.hint}>Chụp màn hình bảng để gửi vào nhóm.</Text>
+                  <View style={styles.sheetCard}>
+                    <View style={styles.sheetCaption}>
+                      <Text style={{ fontSize: font.body, fontWeight: '700', color: colors.ink }}>Công nợ đến {formatIsoDate(bangkokDate())}{scope ? ` · ${scope}` : ''}</Text>
+                      <Text style={styles.hint}>{rows.length} người còn nợ · tổng {formatVnd(data.playerOutstanding + data.guestOutstanding)}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row' }}>
+                      <View style={{ width: nameWidth, borderRightWidth: 1, borderRightColor: colors.line }}>
+                        <View style={[styles.sheetCell, styles.sheetHead, { height: headerHeight }]}><Text style={styles.sheetHeadText}>Tên</Text></View>
+                        {rows.map((row) => (
+                          <View key={row.playerId ?? `guest-${row.name}`} style={[styles.sheetCell, { height: rowHeight }]}>
+                            <Text numberOfLines={1} style={{ fontSize: font.small, fontWeight: '600', color: colors.ink }}>{row.name}</Text>
+                            <Text numberOfLines={1} style={styles.sheetSmall}>{row.isGuest ? 'Khách' : row.memberCode}</Text>
+                          </View>
+                        ))}
+                        <View style={[styles.sheetCell, styles.sheetHead, { height: rowHeight, borderBottomWidth: 0 }]}><Text style={styles.sheetHeadText}>Tổng</Text></View>
                       </View>
-                    ))}
+                      <ScrollView horizontal showsHorizontalScrollIndicator>
+                        <View>
+                          <View style={{ flexDirection: 'row' }}>
+                            {data.columns.map((column, index) => (
+                              <View key={column.playSessionId ?? `other-${index}`} style={[styles.sheetCell, styles.sheetHead, styles.sheetNum, { width: cellWidth, height: headerHeight }]}>
+                                <Text style={styles.sheetHeadText}>{column.sessionDate ? `${column.sessionDate.slice(8, 10)}/${column.sessionDate.slice(5, 7)}` : column.title}</Text>
+                                {column.sessionDate && <Text numberOfLines={1} style={styles.sheetSmall}>{column.title}</Text>}
+                              </View>
+                            ))}
+                            <View style={[styles.sheetCell, styles.sheetHead, styles.sheetNum, { width: cellWidth - 18, height: headerHeight }]}><Text style={styles.sheetHeadText}>Còn nợ</Text></View>
+                          </View>
+                          {rows.map((row) => (
+                            <View key={row.playerId ?? `guest-${row.name}`} style={{ flexDirection: 'row' }}>
+                              {row.cells.map((cell, index) => (
+                                <View key={index} style={[styles.sheetCell, styles.sheetNum, { width: cellWidth, height: rowHeight }, cell && cell.paidAmount > 0 && { backgroundColor: colors.warnSoft }]}>
+                                  {cell ? <>
+                                    <Text style={{ fontSize: font.small, color: colors.ink }}>{plain(cell.outstanding)}</Text>
+                                    {cell.paidAmount > 0 && <Text numberOfLines={1} adjustsFontSizeToFit style={[styles.sheetSmall, { color: colors.warn }]}>trả {plain(cell.paidAmount)}/{plain(cell.amount)}</Text>}
+                                  </> : <Text style={{ fontSize: font.small, color: colors.muted, alignSelf: 'center' }}>–</Text>}
+                                </View>
+                              ))}
+                              <View style={[styles.sheetCell, styles.sheetNum, { width: cellWidth - 18, height: rowHeight }]}><Text style={{ fontSize: font.small, fontWeight: '700', color: colors.danger }}>{plain(row.outstanding)}</Text></View>
+                            </View>
+                          ))}
+                          <View style={{ flexDirection: 'row' }}>
+                            {data.columns.map((column, index) => (
+                              <View key={index} style={[styles.sheetCell, styles.sheetHead, styles.sheetNum, { width: cellWidth, height: rowHeight, borderBottomWidth: 0 }]}><Text style={styles.sheetHeadText}>{plain(column.outstanding)}</Text></View>
+                            ))}
+                            <View style={[styles.sheetCell, styles.sheetHead, styles.sheetNum, { width: cellWidth - 18, height: rowHeight, borderBottomWidth: 0 }]}><Text style={styles.sheetHeadText}>{plain(data.playerOutstanding + data.guestOutstanding)}</Text></View>
+                          </View>
+                        </View>
+                      </ScrollView>
+                    </View>
                   </View>
                 </ScrollView>
               )}
@@ -382,8 +414,13 @@ const styles = StyleSheet.create({
   closeButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   label: { fontSize: font.small, fontWeight: '600', color: colors.ink },
   hint: { fontSize: font.caption, color: colors.muted },
-  textPreview: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: colors.line, padding: 12 },
-  textPreviewBody: { fontSize: font.small, color: colors.ink, lineHeight: 20 },
+  sheetCard: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: colors.line, overflow: 'hidden' },
+  sheetCaption: { padding: 12, gap: 2, borderBottomWidth: 1, borderBottomColor: colors.line },
+  sheetCell: { justifyContent: 'center', paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: colors.line, borderRightWidth: 1, borderRightColor: colors.line },
+  sheetHead: { backgroundColor: colors.neutralSoft },
+  sheetHeadText: { fontSize: font.small, fontWeight: '700', color: colors.ink },
+  sheetNum: { alignItems: 'flex-end' },
+  sheetSmall: { fontSize: 11, color: colors.muted },
   input: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#fff', paddingHorizontal: 12, fontSize: font.body, color: colors.ink },
   moneyBox: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 12, borderWidth: 1, borderColor: colors.line, backgroundColor: '#fff', paddingHorizontal: 12 },
   moneyInput: { flex: 1, minHeight: 46, fontSize: font.body, color: colors.ink },
