@@ -1,39 +1,31 @@
 import { Stack } from 'expo-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
+import { FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { usePermissions } from '@/auth/AuthContext'
 import { errorMessage } from '@/lib/api'
-import { formatDate, formatVnd, newIdempotencyKey } from '@/lib/format'
+import { formatVnd, newIdempotencyKey } from '@/lib/format'
 import {
   bangkokDate, currentMonth, digitsOnly, formatIsoDate, getDebtStatement, getOpenReceivables, getPaymentOverview, groupDigits, monthLabel, parseVnDate,
-  receivableStatusLabels, recordPayment, shiftMonth, type DebtStatement, type FinanceReceivable,
+  receivableStatusLabels, recordPayment, shiftMonth, type DebtStatement, type FinanceDebtor, type FinanceReceivable,
 } from '@/lib/services/finance'
 import { useLoad } from '@/lib/useLoad'
 import { Avatar, Button, Chip, EmptyState, ErrorState, Icon, Loading, styles as ui } from '@/ui/components'
 import { colors, font } from '@/ui/theme'
 import { useToast } from '@/ui/toast'
 
-const quickMethods = ['Tiền mặt', 'Chuyển khoản'] as const
 const formMethods = ['Chuyển khoản', 'Tiền mặt', 'Khác'] as const
 
-function confirmAction(title: string, message: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') { if (window.confirm(`${title}\n${message}`)) onConfirm(); return }
-  Alert.alert(title, message, [{ text: 'Không', style: 'cancel' }, { text: 'Đồng ý', onPress: onConfirm }])
-}
-
-/** Công nợ còn mở của người chơi (tạo khi chốt tiền lịch đánh): tìm, lọc tháng, ghi đã thu nhanh từng khoản hoặc ghi theo người chơi. */
+/** Công nợ còn mở dồn theo người chơi (tạo khi chốt tiền lịch đánh): tìm, lọc tháng, ghi đã thu theo người (mặc định bằng số còn nợ, sửa được). */
 export default function ReceivablesScreen() {
   const { canBill } = usePermissions()
-  const notify = useToast()
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [period, setPeriod] = useState('')
   const [page, setPage] = useState(1)
-  const [method, setMethod] = useState<(typeof quickMethods)[number]>('Tiền mặt')
-  const [busy, setBusy] = useState<string | null>(null)
   const [showTable, setShowTable] = useState(false)
-  const [showForm, setShowForm] = useState(false)
+  // undefined = đóng; '' = mở chưa chọn người; id = mở với người đó chọn sẵn.
+  const [formPlayerId, setFormPlayerId] = useState<string | undefined>()
   const { data, error, loading, refreshing, reload } = useLoad(() => (canBill ? getPaymentOverview(page, search, period) : Promise.resolve(null)), `${page}|${search}|${period}`)
 
   const header = <Stack.Screen options={{ title: 'Công nợ' }} />
@@ -42,28 +34,15 @@ export default function ReceivablesScreen() {
   const applySearch = () => { setSearch(searchInput.trim()); setPage(1) }
   const changePeriod = (value: string) => { setPeriod(value); setPage(1) }
   const money = (value: number | undefined) => (value === undefined ? '—' : formatVnd(value))
-  const rows = data?.receivables.items ?? []
-  const pages = data?.receivables.totalPages ?? 1
-
-  const quickPay = (row: FinanceReceivable) => confirmAction('Ghi đã thu', `Ghi ${row.playerName} đã trả ${formatVnd(row.outstandingAmount)} (${method.toLowerCase()})?\n${row.description}`, async () => {
-    setBusy(row.id)
-    try {
-      await recordPayment({ playerId: row.playerId, amount: row.outstandingAmount, paymentDate: bangkokDate(), method, referenceCode: null, idempotencyKey: newIdempotencyKey(`debt-${row.id}`), notes: `Trả nợ: ${row.description}`, receivableId: row.id })
-      notify('success', `${row.playerName} đã trả ${formatVnd(row.outstandingAmount)}.`)
-      await reload()
-    } catch (payError) {
-      notify('error', errorMessage(payError, 'Không thể ghi đã trả.'))
-    } finally {
-      setBusy(null)
-    }
-  })
+  const rows = data?.debtors?.items ?? []
+  const pages = data?.debtors?.totalPages ?? 1
 
   return (
     <>
       {header}
       <FlatList
         data={loading || error ? [] : rows}
-        keyExtractor={(row) => row.id}
+        keyExtractor={(row) => row.playerId}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: 32 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void reload()} />}
@@ -84,45 +63,49 @@ export default function ReceivablesScreen() {
               <Pressable accessibilityRole="button" onPress={applySearch} style={styles.searchButton}><Text style={{ color: '#fff', fontWeight: '600', fontSize: font.small }}>Tìm</Text></Pressable>
             </View>
             <MonthFilter value={period} onChange={changePeriod} />
-            <View style={styles.chipRow}>
-              <Text style={{ fontSize: font.small, color: colors.muted }}>Ghi nhanh bằng</Text>
-              {quickMethods.map((item) => (
-                <Pressable key={item} accessibilityRole="radio" accessibilityState={{ checked: method === item }} onPress={() => setMethod(item)}>
-                  <Chip label={item} bg={method === item ? colors.money : '#fff'} fg={method === item ? '#fff' : colors.ink} style={[styles.toggleChip, { borderColor: method === item ? colors.money : colors.line }]} />
-                </Pressable>
-              ))}
-            </View>
             <View style={{ paddingHorizontal: 16, gap: 8 }}>
-              <Button label="Ghi đã thu theo người chơi" tone="money" icon="cash-plus" onPress={() => setShowForm(true)} />
+              <Button label="Ghi đã thu theo người chơi" tone="money" icon="cash-plus" onPress={() => setFormPlayerId('')} />
               <Button label="Bảng công nợ theo buổi (cả khách)" tone="outline" icon="table" onPress={() => setShowTable(true)} />
             </View>
-            {data && <Text style={styles.count}>{data.receivables.totalItems} khoản còn nợ</Text>}
+            {data?.debtors && <Text style={styles.count}>{data.debtors.totalItems} người còn nợ · {data.receivables.totalItems} khoản</Text>}
           </View>
         }
         ListEmptyComponent={loading ? <Loading /> : error ? <ErrorState message={error} onRetry={() => void reload()} />
           : <EmptyState icon="check-circle-outline" title="Không có công nợ" message={search || period ? 'Không có khoản nợ khớp bộ lọc.' : 'Chốt tiền một lịch đánh để tạo công nợ cho từng người chơi.'} />}
-        renderItem={({ item }) => (
-          <View style={styles.rowCard}>
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Avatar name={item.playerName} seed={item.playerId} />
-              <View style={{ flex: 1 }}>
-                <Text style={ui.rowTitle}>{item.playerName}</Text>
-                <Text style={ui.rowSub}>{item.description}</Text>
-                <Text style={ui.rowSub}>Phải thu {formatVnd(item.amount)}{item.paidAmount > 0 ? ` · đã thu ${formatVnd(item.paidAmount)}` : ''} · ghi {formatDate(item.createdAtUtc)}</Text>
-              </View>
-              <Text style={{ fontSize: font.body, fontWeight: '700', color: colors.danger }}>{formatVnd(item.outstandingAmount)}</Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
-              <Chip label={receivableStatusLabels[item.status]} bg={item.status === 'partiallyPaid' ? colors.warnSoft : colors.dangerSoft} fg={item.status === 'partiallyPaid' ? colors.warn : colors.danger} />
-              <Button label="Ghi đã thu" tone="money" icon="cash-check" busy={busy === item.id} disabled={busy !== null || item.outstandingAmount <= 0} onPress={() => quickPay(item)} style={{ paddingHorizontal: 14 }} />
-            </View>
-          </View>
-        )}
+        renderItem={({ item }) => <DebtorCard debtor={item} onPay={() => setFormPlayerId(item.playerId)} />}
         ListFooterComponent={!loading && !error && pages > 1 ? <Pager page={page} pages={pages} onChange={setPage} /> : undefined}
       />
       {showTable && <DebtTableSheet search={search} period={period} onClose={() => setShowTable(false)} />}
-      {showForm && <PaymentForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); void reload() }} />}
+      {formPlayerId !== undefined && <PaymentForm initialPlayerId={formPlayerId || undefined} onClose={() => setFormPlayerId(undefined)} onSaved={() => { setFormPlayerId(undefined); void reload() }} />}
     </>
+  )
+}
+
+function DebtorCard({ debtor, onPay }: { debtor: FinanceDebtor; onPay: () => void }) {
+  const partial = debtor.paidAmount > 0
+  return (
+    <View style={styles.rowCard}>
+      <View style={{ flexDirection: 'row', gap: 12 }}>
+        <Avatar name={debtor.playerName} seed={debtor.playerId} />
+        <View style={{ flex: 1 }}>
+          <Text style={ui.rowTitle}>{debtor.playerName}</Text>
+          <Text style={ui.rowSub}>{debtor.memberCode} · {debtor.items.length} khoản{partial ? ` · đã thu ${formatVnd(debtor.paidAmount)}` : ''}</Text>
+        </View>
+        <Text style={{ fontSize: font.body, fontWeight: '700', color: colors.danger }}>{formatVnd(debtor.outstandingAmount)}</Text>
+      </View>
+      <View style={{ marginTop: 8, gap: 4 }}>
+        {debtor.items.map((row) => (
+          <View key={row.id} style={{ flexDirection: 'row', gap: 8 }}>
+            <Text style={[ui.rowSub, { flex: 1 }]} numberOfLines={1}>{row.description}</Text>
+            <Text style={ui.rowSub}>{formatVnd(row.outstandingAmount)}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+        <Chip label={receivableStatusLabels[partial ? 'partiallyPaid' : 'unpaid']} bg={partial ? colors.warnSoft : colors.dangerSoft} fg={partial ? colors.warn : colors.danger} />
+        <Button label="Ghi đã thu" tone="money" icon="cash-check" onPress={onPay} style={{ paddingHorizontal: 14 }} />
+      </View>
+    </View>
   )
 }
 
@@ -253,7 +236,7 @@ interface Debtor { playerId: string; name: string; outstanding: number; count: n
 const normalize = (value: string) => value.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase().trim()
 
 /** Ghi đã thu cho một người chơi: số tiền tự phân bổ vào các khoản nợ cũ nhất trước (giống hộp "Ghi đã thu" trên web). */
-function PaymentForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+function PaymentForm({ initialPlayerId, onClose, onSaved }: { initialPlayerId?: string; onClose: () => void; onSaved: () => void }) {
   const insets = useSafeAreaInsets()
   const notify = useToast()
   const [debts, setDebts] = useState<FinanceReceivable[] | null>(null)
@@ -275,10 +258,16 @@ function PaymentForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
   useEffect(() => {
     let alive = true
     getOpenReceivables()
-      .then((rows) => { if (alive) { setDebts(rows); setLoadError(null) } })
+      .then((rows) => {
+        if (!alive) return
+        setDebts(rows); setLoadError(null)
+        // Mở từ thẻ công nợ: chọn sẵn người đó, số tiền mặc định bằng tổng còn nợ (vẫn sửa được).
+        const owed = rows.filter((row) => row.playerId === initialPlayerId).reduce((sum, row) => sum + row.outstandingAmount, 0)
+        if (initialPlayerId && owed > 0) { setPlayerId((current) => current || initialPlayerId); setAmount((current) => current || String(owed)) }
+      })
       .catch((failure) => { if (alive) setLoadError(errorMessage(failure, 'Không thể tải danh sách công nợ.')) })
     return () => { alive = false }
-  }, [attempt])
+  }, [attempt, initialPlayerId])
 
   const debtors = useMemo(() => {
     const map = new Map<string, Debtor>()

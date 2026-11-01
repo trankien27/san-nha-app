@@ -87,7 +87,9 @@ export interface DebtSessionColumn { playSessionId: string | null; sessionDate: 
 export interface DebtCell { amount: number; paidAmount: number; outstanding: number }
 export interface DebtTableRow { playerId: string | null; memberCode: string | null; name: string; isGuest: boolean; outstanding: number; cells: (DebtCell | null)[] }
 export interface DebtStatement { playerOutstanding: number; guestOutstanding: number; columns: DebtSessionColumn[]; players: DebtTableRow[]; guests: DebtTableRow[] }
-export interface PaymentOverview { charges: number; allocated: number; outstanding: number; receivables: PagedResult<FinanceReceivable>; payments: PagedResult<FinancePayment> }
+/** Công nợ còn mở dồn theo người chơi (tổng + từng khoản, cũ nhất trước). */
+export interface FinanceDebtor { playerId: string; memberCode: string; playerName: string; amount: number; paidAmount: number; outstandingAmount: number; items: FinanceReceivable[] }
+export interface PaymentOverview { charges: number; allocated: number; outstanding: number; receivables: PagedResult<FinanceReceivable>; payments: PagedResult<FinancePayment>; debtors: PagedResult<FinanceDebtor> }
 export interface PaymentInput { playerId: string; amount: number; paymentDate: string; method: string; referenceCode: string | null; idempotencyKey: string; notes: string | null; receivableId?: string | null }
 
 export interface CashFlow { from: string; to: string; collected: number; courtFees: number; materialPurchases: number; materialCost: number; materialRevenue: number; net: number; outstanding: number }
